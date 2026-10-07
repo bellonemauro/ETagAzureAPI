@@ -1,0 +1,52 @@
+# Visual Studio / Rider / VSCode
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+bin/
+obj/
+artifacts/
+
+# NuGet
+*.nupkg
+.packages/
+
+# Rider
+.idea/
+
+# User-specific files
+*.localsettings.json
+local.settings.json
+.env
+*.env
+
+# Secrets / credentials
+secrets.json
+secrets.*
+credentials.json
+*.pfx
+*.key
+
+# Azure storage emulator / logs
+UseDevelopmentStorage=true
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Coverlet / Test results
+coverage*.xml
+test-results/
+
+# JetBrains Rider
+.idea/
+
+# Node (if any web UI)
+node_modules/
+
+# Git
+*.lock
+*.github/*
