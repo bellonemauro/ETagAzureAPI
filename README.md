@@ -32,7 +32,7 @@ Example configuration (environment variables recommended):
 - DEVICE_ID_FILE — local file to persist this device identifier
 
 Local Azurite emulator:
-- Set `AZURE_STORAGE_CONNECTION_STRING=UseDevelopmentStorage=true` (or use the MyAzureAPI constructor that targets the emulator).
+- Set `AZURE_STORAGE_CONNECTION_STRING=UseDevelopmentStorage=true` (or use the ETagAzureAPI constructor that targets the emulator).
 
 Example usage (powershell):
 - $env:AZURE_STORAGE_CONNECTION_STRING="UseDevelopmentStorage=true"
