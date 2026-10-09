@@ -18,17 +18,16 @@ namespace ETAG
     public class ETagAzureAPI
     {
         /// <summary>
-        /// Ctor --- 
+        /// Initializes a new instance of <see cref="ETagAzureAPI"/> configured for Azure Blob Storage.
         /// </summary>
-        ///
-        ///
-        ///
-        /// <param name="_accountName">By design same as the container path on Azure </param>
-        /// <param name="_blobStorageConnectionString"></param>
-        /// <param name="_blobStorageContainerName"></param>
-        /// <param name="_blobSyncFolder">Cartella locale da sincronizzare</param>
-        /// <param name="journalFilePath">Percorso del file di journal locale (NDJSON)</param>
-        /// <param name="deviceIdFilePath">Percorso del file dove persiste l'identificatore di questo dispositivo.</param>
+        /// <param name="_accountName">The Azure Storage account name.</param>
+        /// <param name="_blobStorageConnectionString">The connection string or storage account key.</param>
+        /// <param name="_blobStorageContainerName">The name of the target blob container.</param>
+        /// <param name="_blobSyncFolder">The local directory path to synchronize.</param>
+        /// <param name="journalFilePath">Path to the local NDJSON journal store file.</param>
+        /// <param name="deviceIdFilePath">Path to the file storing this device's persistent unique identifier (GUID).</param>
+        /// <param name="logger">Optional logger for operational diagnostics; defaults to <see cref="NullLogger"/> if null.</param>
+        /// <exception cref="ArgumentException">Thrown when the connection string cannot be resolved or is invalid.</exception>
         public ETagAzureAPI(string _accountName, string _blobStorageConnectionString, string _blobStorageContainerName,
             string _blobSyncFolder, string journalFilePath, string deviceIdFilePath, ILogger? logger = null)
         {
@@ -57,8 +56,13 @@ namespace ETAG
         }
 
         /// <summary>
-        /// Ctor per l'emulatore locale Azurite.
+        /// Initializes a new instance of <see cref="ETagAzureAPI"/> configured for the local Azurite storage emulator.
         /// </summary>
+        /// <param name="containerName">The name of the target container in the local emulator.</param>
+        /// <param name="_blobSyncFolder">The local directory path to synchronize.</param>
+        /// <param name="journalFilePath">Path to the local NDJSON journal store file.</param>
+        /// <param name="deviceIdFilePath">Path to the persistent device ID file.</param>
+        /// <param name="logger">Optional logger instance.</param>
         public ETagAzureAPI(string containerName, string _blobSyncFolder, string journalFilePath,
             string deviceIdFilePath, ILogger? logger = null)
         {
@@ -399,9 +403,13 @@ namespace ETAG
 
 
         /// <summary>
-        /// il criterio di decisione non è più il timestamp ma l'hash del contenuto
-        /// confrontato con l'ultima voce nota nel journal locale
+        /// Synchronizes the local directory to the remote Azure Blob container using content hashes and ETags.
         /// </summary>
+        /// <param name="myFileList">Optional explicit list of files to process; if null or empty, all files in <see cref="blobSyncFolder"/> are processed.</param>
+        /// <param name="deleteUploadedFile">If true, deletes local files after successful upload or verification.</param>
+        /// <param name="onUploadStarted">Callback invoked when an upload begins for a blob name.</param>
+        /// <param name="onFileUploaded">Callback invoked when a file is successfully uploaded.</param>
+        /// <param name="onFileDeleted">Callback invoked when a remote orphan blob is deleted.</param>
         public async Task SyncLocalDirectoryToBlob(
             string[]? myFileList = null,
             bool deleteUploadedFile = false,
@@ -649,7 +657,6 @@ namespace ETAG
         }
 
         public async Task SyncBlobsToLocalDirectory(
-            bool syncSpecialFile = false,
             Action<List<string>>? filesToDownload = null,
             Action<string>? statusMessage = null,
             Action<string>? onDownloadStarted = null,
@@ -706,44 +713,41 @@ namespace ETAG
                             }
                         }
 
-                        bool isSpecial = blobItem.Name.Contains(SpecificFormatMarker);
 
-                        if (!isSpecial || syncSpecialFile)
+                        Directory.CreateDirectory(Path.GetDirectoryName(localFilePath) ?? string.Empty);
+
+                        BlobDownloadInfo blobDownloadInfo = await blobClient.DownloadAsync();
+
+                        try
                         {
-                            Directory.CreateDirectory(Path.GetDirectoryName(localFilePath) ?? string.Empty);
-
-                            BlobDownloadInfo blobDownloadInfo = await blobClient.DownloadAsync();
-
-                            try
+                            onDownloadStarted?.Invoke(blobItem.Name);
+                            // FileMode.Create sovrascrive il file esistente o lo crea se non esiste
+                            using (FileStream fs = new FileStream(
+                                localFilePath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
                             {
-                                onDownloadStarted?.Invoke(blobItem.Name);
-                                // FileMode.Create sovrascrive il file esistente o lo crea se non esiste
-                                using (FileStream fs = new FileStream(
-                                    localFilePath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
-                                {
-                                    await blobDownloadInfo.Content.CopyToAsync(fs);
-                                    await fs.FlushAsync();
-                                }
-
-                                string downloadedETag = blobDownloadInfo.Details.ETag.ToString();
-                                string downloadedHash = ComputeSha256Hex(System.IO.File.ReadAllBytes(localFilePath));
-                                //registro la nuova modifica o una nuova voce
-                                journal.Append(deviceId,
-                                    ownLastEntry == null ? JournalOperationType.Create : JournalOperationType.Modify,
-                                    blobItem.Name, ownLastEntry?.ResultingETag, downloadedETag, downloadedHash);
-
-                                counterRemainingFiles--;
-                                statusStr = counterRemainingFiles.ToString() + "/" + totFileToDownloadCount.ToString();
-                                statusMessage?.Invoke(statusStr);
-
-                                onFileDownloaded?.Invoke(localFilePath);
-                            }
-                            catch (Exception ex)
-                            {
-                                logger.LogError("Error in syncing file, skipping and going to the next file" + ex.Message);
+                                await blobDownloadInfo.Content.CopyToAsync(fs);
+                                await fs.FlushAsync();
                             }
 
+                            string downloadedETag = blobDownloadInfo.Details.ETag.ToString();
+                            string downloadedHash = ComputeSha256Hex(System.IO.File.ReadAllBytes(localFilePath));
+                            //registro la nuova modifica o una nuova voce
+                            journal.Append(deviceId,
+                                ownLastEntry == null ? JournalOperationType.Create : JournalOperationType.Modify,
+                                blobItem.Name, ownLastEntry?.ResultingETag, downloadedETag, downloadedHash);
+
+                            counterRemainingFiles--;
+                            statusStr = counterRemainingFiles.ToString() + "/" + totFileToDownloadCount.ToString();
+                            statusMessage?.Invoke(statusStr);
+
+                            onFileDownloaded?.Invoke(localFilePath);
                         }
+                        catch (Exception ex)
+                        {
+                            logger.LogError("Error in syncing file, skipping and going to the next file" + ex.Message);
+                        }
+
+                        
                     }
 
                 ReconcileLocalDeletions(currentBlobNames, onFileDeleted);
@@ -791,9 +795,16 @@ namespace ETAG
         //     return false;
 
         /// <summary>
-        /// Carica un file condizionando la scrittura alla versione attesa e accoda la voce di journal corrispondente. 
-        /// <returns>Il nuovo ETag prodotto dalla scrittura.</returns>
-
+        /// Uploads a file using optimistic concurrency (ETag) and appends a corresponding entry to the local journal.
+        /// </summary>
+        /// <param name="filePath">Local path of the file to upload.</param>
+        /// <param name="basedOnETag">
+        /// Expected remote ETag for concurrency control.
+        /// If <c>null</c>, enforces atomic creation (<c>If-None-Match: *</c>), failing if the blob already exists.
+        /// If non-null, enforces conditional update (<c>If-Match: basedOnETag</c>), failing if modified concurrently.
+        /// </param>
+        /// <returns>The new ETag generated by Azure upon successful upload.</returns>
+        /// <exception cref="RequestFailedException">Thrown when precondition (HTTP 412) or conflict (HTTP 409) check fails.</exception>
         public async Task<string> uploadTracked(string filePath, string? basedOnETag)
         {
             if (blobContainerclient == null)
@@ -824,8 +835,11 @@ namespace ETAG
         }
 
         /// <summary>
-        /// Cancella un file condizionando la scrittura alla versione attesa e accoda la voce di journal corrispondente. 
+        /// Deletes a remote blob conditionally based on its expected ETag, removes the local file, and records a Delete tombstone in the journal.
         /// </summary>
+        /// <param name="blobName">Remote blob name to delete.</param>
+        /// <param name="basedOnETag">The expected ETag; cannot be null or empty.</param>
+        /// <exception cref="RequestFailedException">Thrown if the blob has changed remotely since <paramref name="basedOnETag"/> (HTTP 412).</exception>
         public async Task deleteTracked(string blobName, string basedOnETag)
         {
             if (blobContainerclient == null)
@@ -850,7 +864,7 @@ namespace ETAG
         }
 
         /// <summary>
-        /// Rifiuta esplicitamente una versione attesa vuota o composta solo di spazi.
+        /// Validates that an expected ETag string is well-formed, preventing unintentional unconditional operations.
         /// </summary>
         private static void ValidateBasedOnETag(string? basedOnETag, bool allowNull)
         {
@@ -871,7 +885,7 @@ namespace ETAG
         }
 
         /// <summary>
-        /// Recupera l'ETAG di un blob
+        /// Retrieves the current ETag of a remote blob, returning <c>null</c> if the blob does not exist (404).
         /// </summary>
         public async Task<string?> GetRemoteETagAsync(string blobName)
         {
@@ -893,13 +907,12 @@ namespace ETAG
         }
 
         /// <summary>
-        /// Verifica la catena di hash del journal locale (tamper-evidence)
+        /// Verify hash chain tamper-evidence)
         /// </summary>
         public int VerifyJournal() => journal.VerifyChain();
 
         /// <summary>
-        /// Pubblica il proprio journal locale nel container, sotto un percorso per dispositivo
-        /// _journal/{deviceId}.ndjson.
+        /// Publishes the local device journal to the container at '_journal/{deviceId}.ndjson'.
         /// </summary>
         public async Task PushJournalAsync()
         {
@@ -918,8 +931,7 @@ namespace ETAG
         }
 
         /// <summary>
-        /// Scarica i segmenti di journal degli altri dispositivi in una cartella locale, per
-        /// ispezione manuale/audit.
+        /// Pulls other devices' journals from the container to a local directory.
         /// </summary>
         public async Task<List<Guid>> PullJournalsAsync()
         {
@@ -950,11 +962,14 @@ namespace ETAG
         }
 
         /// <summary>
-        /// Cancella in locale i file che questo device ha già sincronizzato con successo in
-        /// passato (c'è una voce non-Delete nel proprio journal), il cui contenuto non è
-        /// cambiato da allora rispetto a quanto il journal ricorda, ma che non compaiono più tra i blob
-        /// ovvero che non esistono più sul server in questo momento.
+        /// Deletes local files that are missing from the remote container, provided they have no pending local modifications.
         /// </summary>
+        /// <param name="currentBlobNames">Set of all blob names currently present in the remote container.</param>
+        /// <param name="onFileDeleted">Optional callback invoked when a local file is deleted.</param>
+        /// <remarks>
+        /// A local file is only deleted if its current content hash matches the last recorded journal hash. 
+        /// If the file was modified locally, it is preserved to avoid data loss.
+        /// </remarks>
         private void ReconcileLocalDeletions(HashSet<string> currentBlobNames, Action<string>? onFileDeleted = null)
         {
             foreach (string blobName in journal.GetAllTrackedBlobNames())
@@ -1094,9 +1109,11 @@ namespace ETAG
             Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content));
 
         /// <summary>
-        /// L'SDK restituisce lo stesso ETag racchiuso tra virgolette quando viene da un'operazione
-        /// puntuale (upload, GetProperties) ma senza quando viene da un elenco blob (GetBlobsAsync).
+        /// Strips enclosing double quotes from an ETag string.
+        /// The Azure SDK returns quoted ETags from point operations (upload, GetProperties), 
+        /// but unquoted ones from blob listings (GetBlobsAsync).
         /// </summary>
+
         private static string? NormalizeETag(string? etag) =>
             etag != null && etag.Length >= 2 && etag[0] == '"' && etag[^1] == '"'
                 ? etag[1..^1]
@@ -1135,8 +1152,6 @@ namespace ETAG
         private readonly LocalJournalStore journal;
         private readonly Guid deviceId;
 
-        // Placeholder locale: sostituisce un simbolo dell'applicazione ospite
-        private const string SpecificFormatMarker = "__specific_format__";
 
         private const string JournalPrefix = "_journal/";
         private string JournalSegmentBlobName => JournalPrefix + deviceId + ".ndjson";
